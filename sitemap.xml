@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://oscartgiles.github.io/</loc>
+    </url>
+    <url>
+        <loc>https://oscartgiles.github.io/about/</loc>
+    </url>
+    <url>
+        <loc>https://oscartgiles.github.io/page/1/</loc>
+    </url>
+    <url>
+        <loc>https://oscartgiles.github.io/rivelin-actors/</loc>
+        <lastmod>2024-07-21</lastmod>
+    </url>
+    <url>
+        <loc>https://oscartgiles.github.io/tags/</loc>
+    </url>
+    <url>
+        <loc>https://oscartgiles.github.io/tags/rust/</loc>
+    </url>
+    <url>
+        <loc>https://oscartgiles.github.io/tags/sqlx/</loc>
+    </url>
+    <url>
+        <loc>https://oscartgiles.github.io/tags/testcontainers/</loc>
+    </url>
+    <url>
+        <loc>https://oscartgiles.github.io/welcome/</loc>
+        <lastmod>2024-07-14</lastmod>
+    </url>
+</urlset>

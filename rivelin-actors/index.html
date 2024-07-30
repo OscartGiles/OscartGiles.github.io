@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-J35WB9FEPH"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+
+        gtag('config', 'G-J35WB9FEPH');
+    </script>
+    <title></title>
+    
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+    <meta name="robots" content="noodp"/>
+
+    <link rel="stylesheet" href="https://oscartgiles.github.io/style.css">
+    <link rel="stylesheet" href="https://oscartgiles.github.io/color/green.css">
+
+        <link rel="stylesheet" href="https://oscartgiles.github.io/color/background_blue.css">
+    
+    <link rel="stylesheet" href="https://oscartgiles.github.io/font-hack-subset.css">
+
+    <meta name="description" content="Rivelin is my new side project 🚀. This is the first in a series of posts looking at how it implements background services in Rust using Actors and an event driven architecture. Click the title to read more.">
+
+    <meta property="og:description" content="Rivelin is my new side project 🚀. This is the first in a series of posts looking at how it implements background services in Rust using Actors and an event driven architecture. Click the title to read more.">
+    <meta property="og:title" content="">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://oscartgiles.github.io/rivelin-actors/">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:description" content="Rivelin is my new side project 🚀. This is the first in a series of posts looking at how it implements background services in Rust using Actors and an event driven architecture. Click the title to read more.">
+    <meta name="twitter:title" content="">
+    <meta property="twitter:domain" content="oscartgiles.github.io&#x2F;">
+    <meta property="twitter:url" content="https://oscartgiles.github.io/rivelin-actors/">
+
+    </head>
+
+<body class="">
+    <div class="container">
+        
+        <header class="header">
+            <div class="header__inner">
+                <div class="header__logo">
+                    
+                    <a href="https://oscartgiles.github.io/" style="text-decoration: none;">
+                        <div class="logo">
+                            
+                            Oscar Giles
+                            
+                        </div>
+                    </a>
+                </div>
+            </div>
+
+            
+            <nav class="menu">
+            <ul class="menu__inner">
+                <li><a href="https://oscartgiles.github.io//about">about me</a></li>
+            
+                <li><a href="https://github.com/OscartGiles" target="_blank" rel="noopener noreferrer">github</a></li>
+            </ul>
+        </nav>
+    
+    
+            
+        </header>
+        
+
+        <div class="content">
+            
+    <div class="post">
+        
+    <h1 class="post-title"><a href="https://oscartgiles.github.io/rivelin-actors/">Rivelin part 1: Building (yet another) Actor framework</a></h1>
+    <div class="post-meta-inline">
+        
+    <span class="post-date">
+            2024-07-21
+        </span>
+
+    </div>
+
+    
+
+        <div class="post-content">
+            <p>I've been working on a new side project recently called Rivelin. It's a cloud deployment service inspired by <a href="https://mybinder.org/">Binder</a>, <a href="https://railway.app/">Railway</a> and <a href="https://www.qovery.com/">Qovery</a>. These deploy and run application code on the cloud, while abstracting away the complexity of managing container images and infrastructure. I want to build something that takes inspiration from these, but with a few twists and a focus on data science and machine learning projects.</p>
+<p>I'm planning to write a couple of blog posts about some of the components of Rivelin. For the moment, I've decided not to open-source the codebase. Instead, I've moved some of the components into their own repo at <a href="https://github.com/OscartGiles/rivelin_extra">rivelin_extra</a>.</p>
+<p>Rivelin is built in Rust using <a href="https://github.com/tokio-rs/axum">axum</a> and <a href="https://htmx.org/">htmx</a>. It receives HTTP requests and uses background services for long running tasks.</p>
+<p>These posts are going to focus on how Rivelin implements background services using a custom actor framework. There are a lot of Rust actor frameworks out there, but part of the goal of Rivelin is my learning, so we're going to build our own.</p>
+<p>We'll cover:</p>
+<ol>
+<li>Building an actor framework and using it to implementing a background task manager.</li>
+<li>Building a pub-sub event bus.</li>
+</ol>
+<p>This post is 1 of 2.</p>
+<!-- > While I've got you here, I'm currently looking for a job. If you think I might be a good fit for your team, I'd love to hear from you. You can find me on [linkedin](https://www.linkedin.com/in/oscart-giles/).
+> -->
+<blockquote>
+<p>If you want to find out more about Rivelin or would like a demo, drop me a message on <a href="https://www.linkedin.com/in/oscart-giles/">linkedin</a>.</p>
+</blockquote>
+<!-- ### Why build Rivelin?
+
+I have a solution in search of a problem 🔍. I want to practice some Rust skills, and I thought this problem would push me into some interesting areas of Rust. I want to try out some new technologies and libraries that I've been interested in for a while but haven't used at work. Specifically:
+
+- [htmx](https://htmx.org/): a js library which extends html to enable building modern websites. 
+- [askama](https://github.com/djc/askama): A template rendering engine with compile time checks.
+- [sqlx](https://github.com/launchbadge/sqlx): A database library with compile time query checks.
+- [WASM's component model](https://component-model.bytecodealliance.org/): Great for building secure plugin systems.
+
+But most importantly, I want to explore some design patterns in Rust around event driven architectures and [Actor models](https://en.wikipedia.org/wiki/Actor_model). -->
+<h3 id="rivelin-s-architecture">Rivelin's Architecture</h3>
+<p>Before we dive into some code lets take a quick look at a subsection of Rivelin's architecture to give some context to what we want to achieve (see diagram below).</p>
+<p>On the left we have three HTTP handlers. The first triggers the build of an OCI image, while the second deletes or cancels a build. The last handler streams events back to the client (using <a href="https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events">server-sent events</a>) which provides information about the progress of the build. In reality there are quite a few other handlers involved here (particularly because we're using htmx to update parts of the UI), but these illustrate the most important parts of the system.</p>
+<img src="/rivelin_architecture.svg"/>
+<p>On the right we have background services, which in this case are all actors. These are:</p>
+<ul>
+<li>The <code>Build Task Manager</code>. Responsible for managing container builds, including starting and stopping them.</li>
+<li>The <code>EventBus</code>. An <a href="https://en.wikipedia.org/wiki/Publish%E2%80%93subscribe_pattern">event bus</a> receives events from <code>producers</code> and delivers them to <code>consumers</code>.</li>
+<li>The <code>Database sink</code>. This listens for events and persists them to storage.</li>
+</ul>
+<p>Solid lines show messages being sent to an actor, while dashed lines show responses to the messages.</p>
+<p>In this post we're only going to implement the <code>Build Task Manager</code> actor.</p>
+<!-- ### Why Rust?
+
+Rust is a fantastic language for building high-performance reliable software and it has a bright future for cloud technologies. There is an upfront cost to pay with Rust - it is a fairly complex language. This translates to a steep learning curve, but this can pay off many times over. Rust allows you to shift a lot of bugs from runtime to compile time, and its type system affords building APIs that are hard to use in incorrect or invalid ways. In practice this means designing new APIs can require some deep thought. The payback is the compiler then protects you and your users from making mistakes which can make it to runtime.
+
+Ok that's a lot of pre-amble. Lets get to the core focus of this post. -->
+<h2 id="why-actors">Why Actors</h2>
+<p>The <a href="https://en.wikipedia.org/wiki/Actor_model">Actor model</a> is a mathematical model of concurrent computation which treats actors as the base unit of computation. Actors are entities that:</p>
+<ul>
+<li>Only communicate by sending asynchronous messages.</li>
+<li>Only have local state.</li>
+<li>Can create new actors, send messages to other actors, and respond to messages.</li>
+</ul>
+<p>The combination of communicating only via well defined messages and only having local state makes actors naturally modular and loosely-coupled. These characteristics can help to give our code structure and reduce it's <a href="https://en.wikipedia.org/wiki/Complexity">complexity</a>, making it easier to understand, test, and change.</p>
+<p>We can exchange one actor for another, as long as they support the same message types, and can make changes to the internal workings of the actor without needing to alter other components in the system.</p>
+<p>Actors are designed for concurrent computation, although how the achieve concurrency is an implementation details. Actors could be running on distributed machines, on a single machine with multiple threads, or even in a single-threaded event loop. This is great for Rivelin because we want to implement background services that run concurrently along side our HTTP handlers. In Rivelin's case we are using <a href="https://tokio.rs/">tokio</a> to run our actors on a multithreaded work-stealing async runtime.</p>
+<h2 id="our-first-actor-hello-world">Our first actor - Hello World!</h2>
+<p>To build an actor framework in Rust we're going to use two language features that are often considered advanced - async/await and traits. If you don't have a basic understanding of these you might find the following resources helpful:</p>
+<ul>
+<li><a href="https://rust-lang.github.io/async-book/">Async book</a></li>
+<li><a href="https://doc.rust-lang.org/book/ch10-02-traits.html">Traits - Rust book</a></li>
+</ul>
+<blockquote>
+<p>It's worth flagging this fantastic blog post on <a href="https://ryhl.io/blog/actors-with-tokio/">Actors with tokio</a> by Alice Ryhl, which was the inspiration for my implementation.</p>
+<p>Please note: Rivelin's actor framework is not production ready, is feature poor and has not been thoroughly tested.</p>
+<ul>
+<li>Update: I came across <a href="https://github.com/slawlor/ractor">ractor</a> while scouring reddit, which has a similar API to the one I built for Rivelin. I've only glanced at it but it has a lot of cool features, including distributed actors. It could be worth looking into.</li>
+</ul>
+</blockquote>
+<p>We're going to start by implementing an actor, <code>HelloWorldActor</code>, before diving into how the actor framework is implemented.</p>
+<p>The <code>HelloWorldActor</code> can receive a single message, which has the <a href="https://doc.rust-lang.org/std/string/struct.String.html"><code>String</code></a> type. When we send a message it will send back a response (also a <code>String</code>). The actor holds some internal state (a <a href="https://doc.rust-lang.org/std/primitive.u8.html"><code>u8</code></a>) that keeps track of the number of messages it has received.</p>
+<p>Lets look at the <code>HelloWorldActor</code> in action (it's implemented as a test in <a href="https://github.com/OscartGiles/rivelin_extra/blob/c0ba628bc57419da1f018cbe4939d4e3077590fb/rivelin_actors/tests/hello_world.rs">rivelin_extra</a> if you want to run the code):</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">let</span><span> actor </span><span style="color:#ff5e5e;">=</span><span> HelloWorldActor; </span><span style="color:#6d6d6d;">// Instantiate the actor.
+</span><span style="font-style:italic;color:#fbdfb5;">let</span><span> state </span><span style="color:#ff5e5e;">= </span><span style="color:#fdb082;">0</span><span>; </span><span style="color:#6d6d6d;">// Instantiate the actors state.
+</span><span>
+</span><span style="color:#6d6d6d;">// Spawn the actor on tokio&#39;s multi-threaded runtime.
+</span><span style="font-style:italic;color:#fbdfb5;">let </span><span>(addr, _handle): (HelloWorldAddr, </span><span style="color:#ff5e5e;">_</span><span>) </span><span style="color:#ff5e5e;">= </span><span>Actor::spawn(actor, state);
+</span><span>
+</span><span style="color:#6d6d6d;">// Send a message to the actor via its address and await its response.
+</span><span style="font-style:italic;color:#fbdfb5;">let</span><span> response </span><span style="color:#ff5e5e;">=</span><span> addr.</span><span style="color:#6699cc;">message</span><span>(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">World</span><span style="color:#ffffff;">&quot;</span><span>).await</span><span style="color:#ff5e5e;">?</span><span>;
+</span><span>assert_eq!(response, </span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Hello World! I have received 1 messages</span><span style="color:#ffffff;">&quot;</span><span>);
+</span></code></pre>
+<p>We <code>spawn</code> an actor on the Tokio runtime by providing an instance of the actor and its initial state to the <code>Actor::spawn</code> <a href="https://doc.rust-lang.org/book/ch05-03-method-syntax.html?highlight=associated%20function#associated-functions">associated function</a>. This returns an address (<code>addr</code>) for the actor and a <code>handle</code>. The <code>addr</code> can be cheaply cloned so we can send messages to the actor from multiple places in our code. The handle allows us stop the actor, either by asking it to gracefully shutdown, or by aborting it (see <a href="https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html#method.abort">abort</a>).</p>
+<p>The actor's <code>addr</code> is a custom type called <code>HelloWorldAddr</code>. This has a single method, <code>message</code>, which provides a convenient way to send messages to the actor and await the response.</p>
+<h3 id="implementing-helloworldactor">Implementing <code>HelloWorldActor</code></h3>
+<p>Lets see how this actor is implemented using our actor framework. We'll start by defining the message type that the actor will receive:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[</span><span style="color:#e9fdac;">derive</span><span>(Debug)]
+</span><span style="font-style:italic;color:#fbdfb5;">struct </span><span>HelloMessage {
+</span><span>    </span><span style="color:#e9fdac;">content</span><span>: String,
+</span><span>    </span><span style="color:#e9fdac;">channel</span><span>: tokio::sync::oneshot::Sender&lt;</span><span style="color:#fbe3bf;">String</span><span>&gt;,
+</span><span>}
+</span></code></pre>
+<p>This struct has two fields, the first holds the message we want to send to the actor, and the second holds the receiving end of a <a href="https://docs.rs/tokio/latest/tokio/sync/oneshot/index.html">oneshot channel</a>, which the <code>HelloWorldActor</code> will use to send a response back to the caller.</p>
+<p>We can now implement our actor. We do this by defining a <code>HelloWorldActor</code> struct and then implement the <code>Actor</code> trait for it:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">struct </span><span>HelloWorldActor;
+</span><span>
+</span><span style="font-style:italic;color:#fbdfb5;">impl </span><span>Actor </span><span style="color:#ff5e5e;">for </span><span>HelloWorldActor {
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">type </span><span>Message </span><span style="color:#ff5e5e;">=</span><span> HelloMessage;
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">type </span><span>State </span><span style="color:#ff5e5e;">= </span><span style="font-style:italic;color:#fbdfb5;">u8</span><span>;
+</span><span>
+</span><span>    async </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">handle</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">message</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message, </span><span style="font-style:italic;color:#fc9354;">n_messages</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State) {
+</span><span>        </span><span style="color:#ff5e5e;">*</span><span>n_messages </span><span style="color:#ff5e5e;">+= </span><span style="color:#fdb082;">1</span><span>; </span><span style="color:#6d6d6d;">// Increment count of messages received.
+</span><span>
+</span><span>        </span><span style="color:#6d6d6d;">// Prepare a response
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">let</span><span> response </span><span style="color:#ff5e5e;">= </span><span>format!(
+</span><span>            </span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Hello </span><span style="color:#fdb082;">{}</span><span style="color:#fbe3bf;">! I have received </span><span style="color:#fdb082;">{}</span><span style="color:#fbe3bf;"> messages</span><span style="color:#ffffff;">&quot;</span><span>,
+</span><span>            message.content, n_messages
+</span><span>        );
+</span><span>
+</span><span>        </span><span style="color:#6d6d6d;">// Send the response back to the caller using the oneshot channel provided in the message.
+</span><span>        message
+</span><span>            .channel
+</span><span>            .</span><span style="color:#6699cc;">send</span><span>(response)
+</span><span>            .</span><span style="color:#6699cc;">expect</span><span>(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Channel must be open</span><span style="color:#ffffff;">&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>Actor</code> trait has two <a href="https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#specifying-placeholder-types-in-trait-definitions-with-associated-types">associated types</a>. The first provides the type of <code>Message</code> the actor can receive, while the second provides the type for the actors internal <code>State</code> (this will be a count of the number of messages received).</p>
+<p>Next we implement the trait's <code>handle</code> method. This is called when the actor receives a message. Here it simply increments the message counter by one, creates a response and sends it back to the caller using the oneshot channel provided in the message.</p>
+<blockquote>
+<p>The <code>Actor</code> trait defines other methods but these all have default implementations so we don't need to worry about them here. We'll use these in the next example.</p>
+</blockquote>
+<p>This is all we need to implement our first actor! However, constructing messages to send to the actor is somewhat verbose:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#6d6d6d;">// Spawn the actor
+</span><span style="font-style:italic;color:#fbdfb5;">let </span><span>(addr, _handle): (Addr&lt;HelloWorldActor&gt;, </span><span style="color:#ff5e5e;">_</span><span>) </span><span style="color:#ff5e5e;">= </span><span>Actor::spawn(HelloWorldActor, </span><span style="color:#fdb082;">0</span><span>);
+</span><span>
+</span><span style="color:#6d6d6d;">// Create a message
+</span><span style="font-style:italic;color:#fbdfb5;">let </span><span>(tx, rx) </span><span style="color:#ff5e5e;">= </span><span>oneshot::channel();
+</span><span>addr.</span><span style="color:#6699cc;">send</span><span>(HelloMessage {
+</span><span>    content: </span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Alice</span><span style="color:#ffffff;">&quot;</span><span>.</span><span style="color:#6699cc;">to_string</span><span>(),
+</span><span>    channel: tx,
+</span><span>}).await</span><span style="color:#ff5e5e;">?</span><span>;
+</span><span>
+</span><span style="color:#6d6d6d;">// Listen for a response on the oneshot channel receiver
+</span><span style="font-style:italic;color:#fbdfb5;">let</span><span> response </span><span style="color:#ff5e5e;">=</span><span> rx.await</span><span style="color:#ff5e5e;">?</span><span>;
+</span></code></pre>
+<p>To create the API we saw in our first example we can create a wrapper type around the raw address (<code>Addr&lt;HelloWorldActor&gt;</code>):</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#6d6d6d;">// Wrapper around `Addr&lt;HelloWorldActor&gt;`
+</span><span style="font-style:italic;color:#fbdfb5;">struct </span><span>HelloWorldAddr(Addr&lt;HelloWorldActor&gt;);
+</span><span>
+</span><span style="font-style:italic;color:#fbdfb5;">impl </span><span>HelloWorldAddr {
+</span><span>    async </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">message</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">message</span><span>: impl </span><span style="color:#fbe3bf;">Into</span><span>&lt;</span><span style="color:#fbe3bf;">String</span><span>&gt;) -&gt; anyhow::</span><span style="color:#fbe3bf;">Result</span><span>&lt;</span><span style="color:#fbe3bf;">String</span><span>&gt; {
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">let </span><span>(tx, rx) </span><span style="color:#ff5e5e;">= </span><span>oneshot::channel();
+</span><span>
+</span><span>        </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#fdb082;">0
+</span><span>            .</span><span style="color:#6699cc;">send</span><span>(HelloMessage {
+</span><span>                content: message.</span><span style="color:#6699cc;">into</span><span>(),
+</span><span>                channel: tx,
+</span><span>            })
+</span><span>            .await</span><span style="color:#ff5e5e;">?</span><span>;
+</span><span>
+</span><span>        </span><span style="color:#fbe3bf;">Ok</span><span>(rx.await</span><span style="color:#ff5e5e;">?</span><span>)
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="font-style:italic;color:#fbdfb5;">impl </span><span style="color:#fbe3bf;">From</span><span>&lt;Addr&lt;HelloWorldActor&gt;&gt; </span><span style="color:#ff5e5e;">for </span><span>HelloWorldAddr {
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">from</span><span>(</span><span style="font-style:italic;color:#fc9354;">addr</span><span>: Addr&lt;HelloWorldActor&gt;) -&gt; </span><span style="font-style:italic;color:#fbdfb5;">Self </span><span>{
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">Self</span><span>(addr)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>and now the caller can use:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">let</span><span> response </span><span style="color:#ff5e5e;">=</span><span> addr.</span><span style="color:#6699cc;">message</span><span>(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">World</span><span style="color:#ffffff;">&quot;</span><span>).await</span><span style="color:#ff5e5e;">?</span><span>;
+</span></code></pre>
+<p>This abstracts away the oneshot channel which could make it easier to change the actors implementation in the future (for example, if we wanted to use a different channel implementation or even communicate with actors over the network). It also means our uses don't necessarily need to understand <a href="https://doc.rust-lang.org/rust-by-example/std_misc/channels.html">channels</a> to use our API.</p>
+<blockquote>
+<p>The implementation of the <a href="https://doc.rust-lang.org/std/convert/trait.From.html"><code>From</code></a> trait for our <code>HelloWorldAddr</code> allows the <code>Actor::spawn</code> function to return the wrapper type instead of <code>Addr&lt;HelloWorld&gt;</code>.</p>
+<p>I don't love that we need to implement a wrapper type for each actor, just to get a response back. This seems like a common task so I might rethink this soon.</p>
+</blockquote>
+<h3 id="the-actor-trait">The <code>Actor</code> trait</h3>
+<p>Now we'll look at how our actor framework is implement. It consists of a single <a href="https://github.com/OscartGiles/rivelin_extra/blob/c0ba628bc57419da1f018cbe4939d4e3077590fb/rivelin_actors/tests/build_task_manager.rs"><code>Actor</code></a> trait. This trait is a little bit complex, but we'll break it down to understand what is going on:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff5e5e;">pub </span><span style="font-style:italic;color:#fbdfb5;">trait </span><span>Actor
+</span><span>where
+</span><span>    Self: &#39;static + Sized + Send,
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">type </span><span>Message: </span><span style="color:#fbe3bf;">Send</span><span>;
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">type </span><span>State: </span><span style="color:#fbe3bf;">Send</span><span>;
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">handle</span><span>(
+</span><span>        </span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>,
+</span><span>        </span><span style="font-style:italic;color:#fc9354;">message</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message,
+</span><span>        </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State,
+</span><span>    ) -&gt; impl std::future::Future
+</span><span>    &lt;Output = ()&gt; </span><span style="color:#ff5e5e;">+ </span><span style="color:#fbe3bf;">Send</span><span>;
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">run</span><span>(
+</span><span>        </span><span style="font-style:italic;color:#fc9354;">self</span><span>,
+</span><span>        </span><span style="color:#ff5e5e;">mut </span><span style="font-style:italic;color:#fc9354;">message_stream</span><span>: impl Stream&lt;Item = </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message&gt; + Send + </span><span style="color:#ff5e5e;">&#39;static</span><span> + std::marker::Unpin,
+</span><span>        </span><span style="color:#ff5e5e;">mut </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State,
+</span><span>    ) -&gt; impl std::future::Future&lt;Output = ()&gt; </span><span style="color:#ff5e5e;">+ </span><span style="color:#fbe3bf;">Send </span><span>{
+</span><span>        async </span><span style="color:#ff5e5e;">move </span><span>{
+</span><span>            </span><span style="color:#ff5e5e;">while </span><span style="font-style:italic;color:#fbdfb5;">let </span><span style="color:#fbe3bf;">Some</span><span>(message) </span><span style="color:#ff5e5e;">=</span><span> message_stream.</span><span style="color:#6699cc;">next</span><span>().await {
+</span><span>                </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#6699cc;">handle</span><span>(message, </span><span style="color:#ff5e5e;">&amp;mut</span><span> state).await;
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">spawn</span><span>&lt;K&gt;(</span><span style="font-style:italic;color:#fc9354;">actor</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self</span><span>, </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State) -&gt; (K, tokio::task::JoinHandle&lt;()&gt;)
+</span><span>    </span><span style="color:#ff5e5e;">where
+</span><span>        K: </span><span style="color:#fbe3bf;">From</span><span>&lt;Addr&lt;</span><span style="font-style:italic;color:#fbdfb5;">Self</span><span>&gt;&gt;,
+</span><span>    {
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">let </span><span>(sender, receiver) </span><span style="color:#ff5e5e;">= </span><span>mpsc::channel::&lt;</span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message&gt;(</span><span style="color:#fdb082;">1000</span><span>);
+</span><span>
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">let</span><span> handle </span><span style="color:#ff5e5e;">= </span><span>tokio::spawn(async </span><span style="color:#ff5e5e;">move </span><span>{
+</span><span>            </span><span style="font-style:italic;color:#fbdfb5;">let </span><span style="color:#ff5e5e;">mut</span><span> state </span><span style="color:#ff5e5e;">=</span><span> state;
+</span><span>            actor.</span><span style="color:#6699cc;">on_start</span><span>(</span><span style="color:#ff5e5e;">&amp;mut</span><span> state).await;
+</span><span>            actor.</span><span style="color:#6699cc;">run</span><span>(ReceiverStream::new(receiver), state).await;
+</span><span>        });
+</span><span>
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">let</span><span> addr </span><span style="color:#ff5e5e;">= </span><span>Addr::&lt;</span><span style="font-style:italic;color:#fbdfb5;">Self</span><span>&gt;::new(sender);
+</span><span>
+</span><span>        (addr.</span><span style="color:#6699cc;">into</span><span>(), handle)
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">on_start</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">_state</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State) -&gt; impl std::future::Future&lt;Output = ()&gt; </span><span style="color:#ff5e5e;">+ </span><span style="color:#fbe3bf;">Send </span><span>{
+</span><span>        async {}
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">on_stop</span><span>(</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">_state</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State) -&gt; impl std::future::Future&lt;Output = ()&gt; </span><span style="color:#ff5e5e;">+ </span><span style="color:#fbe3bf;">Send </span><span>{
+</span><span>        async {}
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>First lets take a look at this <code>where</code> clause in the trait definition:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff5e5e;">pub </span><span style="font-style:italic;color:#fbdfb5;">trait </span><span>Actor
+</span><span>where
+</span><span>    Self: &#39;static + Sized + Send,
+</span><span>{
+</span></code></pre>
+<p>These are <a href="https://doc.rust-lang.org/rust-by-example/generics/bounds.html">trait bounds</a> which "stipulate what functionality a type implements". In this case, the <code>Actor</code> trait requires that any type that implements it must be <code>'static</code> and implement the <code>Sized</code>, and <code>Send</code> traits.</p>
+<p>In the context of traits, a <a href="https://doc.rust-lang.org/rust-by-example/scope/lifetime/static_lifetime.html#trait-bound"><code>'static</code></a>trait bound means that the type cannot contain any non-static references (i.e. we can hold onto the type for an indefinite amount of time while guaranteeing any references it holds will not become invalid). For example, the following type contains a non-static reference and so attempting to implement the <code>Actor</code> trait will result in a compilation error:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">struct </span><span>MyActor&lt;</span><span style="color:#ff5e5e;">&#39;a</span><span>&gt; {
+</span><span>    </span><span style="color:#e9fdac;">data</span><span>: </span><span style="color:#ff5e5e;">&amp;&#39;a </span><span style="font-style:italic;color:#fbdfb5;">str</span><span>,
+</span><span>}
+</span></code></pre>
+<p>This is required because actors are <a href="https://doc.rust-lang.org/std/keyword.move.html"><code>moved</code></a> into a <a href="https://docs.rs/tokio/latest/tokio/task/index.html"><code>tokio::Task</code></a> (essentially an asynchronous green thread). That means the actor could outlive the the data pointed to by the reference it holds, which could result in a <a href="https://owasp.org/www-community/vulnerabilities/Using_freed_memory">use after free</a> bug.</p>
+<p>Types implementing <code>Actor</code> must be <code>Sized</code>, meaning they have a known size at compile time. This is required because Rust needs to know how much memory to allocate for the type so it can be placed on the stack.</p>
+<p>Finally it must implement the <code>Send</code> trait. <a href="https://doc.rust-lang.org/std/marker/trait.Send.html"><code>Send</code></a> is a <a href="https://doc.rust-lang.org/std/marker/index.html">marker trait</a> that means the type is safe to send between threads. This is required because Tokio uses a multi-threaded runtime, and the actor could be moved between threads.</p>
+<blockquote>
+<p>The <code>Send</code> trait bound is required because we're using the Tokio multithreaded runtime, not because we are using async rust. If we used a single threaded runtime we could relax this requirement.</p>
+</blockquote>
+<p>The next part defines two associated types for the trait:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">type </span><span>Message: </span><span style="color:#fbe3bf;">Send</span><span>;
+</span><span style="font-style:italic;color:#fbdfb5;">type </span><span>State: </span><span style="color:#fbe3bf;">Send</span><span>;
+</span></code></pre>
+<p>These are the <code>Message</code> and <code>State</code> types that we saw in the <code>HelloWorldActor</code> example. Both of these have the <code>Send</code> trait bound. <code>State</code> because it is moved into the spawned tokio task as per the actor itself. The <code>Message</code> type requires <code>Send</code> because the message is sent from the actors address to the actor, and this could cross a thread bound.</p>
+<p>The most important method is <code>handle</code>:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">handle</span><span>(
+</span><span>    </span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>,
+</span><span>    </span><span style="font-style:italic;color:#fc9354;">message</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message,
+</span><span>    </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State,
+</span><span>) -&gt; impl std::future::Future
+</span><span>&lt;Output = ()&gt; </span><span style="color:#ff5e5e;">+ </span><span style="color:#fbe3bf;">Send</span><span>;
+</span></code></pre>
+<p>You will remember from out <code>HelloWorldActor</code> example that we implemented this method using async/await syntax:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span>async </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">handle</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">message</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message, </span><span style="font-style:italic;color:#fc9354;">n_messages</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State) {
+</span><span>}
+</span></code></pre>
+<p>This <code>async fn</code> is syntactic sugar for:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">handle</span><span>(
+</span><span>        </span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>,
+</span><span>        </span><span style="font-style:italic;color:#fc9354;">message</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message,
+</span><span>        </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State,
+</span><span>    ) -&gt; impl std::future::Future
+</span><span>    &lt;Output = ()&gt; 
+</span></code></pre>
+<p>This is quite new in Rust, with "return position <code>impl Trait</code>s" only being <a href="https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html">supported since Rust 1.75</a>. The additional <code>Send</code> bound is required because Tokio's multi-threaded runtime is work-stealing. That means that at any time, the future could be moved to a different thread.</p>
+<blockquote>
+<ul>
+<li>It's recommended that Rust libraries implement two versions on traits that return <a href="https://doc.rust-lang.org/std/future/trait.Future.html"><code>Futures</code></a> - one with a <code>Send</code> bound and one without. As Rivelin's actor framework will only work with Tokio I have only implemented a version with <code>Send</code> bounds.</li>
+</ul>
+</blockquote>
+<p>There is one final method that we didn't show above:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">run</span><span>(
+</span><span>    </span><span style="font-style:italic;color:#fc9354;">self</span><span>,
+</span><span>    </span><span style="color:#ff5e5e;">mut </span><span style="font-style:italic;color:#fc9354;">message_stream</span><span>: impl Stream&lt;Item = </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message&gt; + Send + </span><span style="color:#ff5e5e;">&#39;static</span><span> + std::marker::Unpin,
+</span><span>    </span><span style="color:#ff5e5e;">mut </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State,
+</span><span>    </span><span style="font-style:italic;color:#fc9354;">cancellation_token</span><span>: CancellationToken,
+</span><span>) -&gt; impl std::future::Future&lt;Output = ()&gt; </span><span style="color:#ff5e5e;">+ </span><span style="color:#fbe3bf;">Send </span><span>{
+</span><span>    async </span><span style="color:#ff5e5e;">move </span><span>{
+</span><span>        </span><span style="color:#ff5e5e;">loop </span><span>{
+</span><span>            tokio::select</span><span style="color:#ff5e5e;">! </span><span>{
+</span><span>                </span><span style="color:#ff5e5e;">_ =</span><span> cancellation_token.</span><span style="color:#6699cc;">cancelled</span><span>() </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>                    </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#6699cc;">on_stop</span><span>(</span><span style="color:#ff5e5e;">&amp;mut</span><span> state).await;
+</span><span>                    </span><span style="color:#ff5e5e;">break</span><span>;
+</span><span>                },
+</span><span>                message </span><span style="color:#ff5e5e;">=</span><span> message_stream.</span><span style="color:#6699cc;">next</span><span>() </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>                    </span><span style="color:#ff5e5e;">match</span><span> message {
+</span><span>                        </span><span style="color:#fbe3bf;">Some</span><span>(message) </span><span style="color:#ff5e5e;">=&gt; </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#6699cc;">handle</span><span>(message, </span><span style="color:#ff5e5e;">&amp;mut</span><span> state).await,
+</span><span>                        </span><span style="color:#fbe3bf;">None </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>                            </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#6699cc;">on_stop</span><span>(</span><span style="color:#ff5e5e;">&amp;mut</span><span> state).await;
+</span><span>                            </span><span style="color:#ff5e5e;">break
+</span><span>                        },
+</span><span>                    };
+</span><span>                }
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>This method is the actors event-loop and starts when the actor is spawned. It has a default implementation so actors generally do not need to implement it.</p>
+<p>It uses the <a href="https://docs.rs/tokio/latest/tokio/macro.select.html">tokio::select!</a> macro to wait on multiple branches concurrently, returning when the first branch completes. The second branch is the key one, which iterates over the message stream, passing each message to the actors <code>.handle</code> method. The first branch listens for a cancellation signal, which can be used to gracefully shut down the actor.</p>
+<p>The <a href="https://docs.rs/tokio-util/latest/tokio_util/sync/struct.CancellationToken.html"><code>CancellationToken</code></a> used in the first branch is a type that can be used to cancel the actor. In the default <code>.run</code> implementation, when the cancellation token is cancelled the actor will call its <code>on_stop</code> method and then <code>break</code> from the loop (shutting the actor down). You can implement any shutdown logic you like in the <code>on_stop</code> method:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">on_stop</span><span>(</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">_state</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State) -&gt; impl std::future::Future&lt;Output = ()&gt; </span><span style="color:#ff5e5e;">+ </span><span style="color:#fbe3bf;">Send </span><span>{
+</span><span>    async {}
+</span><span>}
+</span></code></pre>
+<p>You'll notice this takes <code>self</code> as an argument, which means this function takes ownership of <code>self</code>. This has the useful effect of ensuring we get a compilation error if we don't immediately <code>break</code> from the loop after calling <code>on_stop</code>. This ensures that if <code>.run</code> is overridden, the event loop will still exit after <code>on_stop</code> is called.</p>
+<blockquote>
+<h4 id="message-stream-type-advanced"><code>message_stream</code> type (advanced)</h4>
+<ul>
+<li>You'll notice the <code>message_stream</code> argument has a complex type. It is a type which implements the <a href="https://docs.rs/futures/latest/futures/stream/trait.Stream.html"><code>Stream</code></a> trait, which is the async equivilent of the <a href="https://doc.rust-lang.org/std/iter/trait.Iterator.html"><code>Iterator</code></a> trait.</li>
+<li>We've seen the <code>Send</code> and <code>'static</code> bounds before. The last bound <a href="https://doc.rust-lang.org/std/marker/trait.Unpin.html"><code>std::marker::Unpin</code></a> is another marker trait. Rust has a concept called <a href="https://doc.rust-lang.org/std/pin/index.html"><code>Pinning</code></a>, which prevents a value from being moved in memory (which is required if moving the value would invalidate references that it holds). Pinning is an advanced topic and notoriously tricky to understand 🤯. For a great deep dive into Pin, you could read <a href="https://without.boats/blog/pin/">this post from without.boats</a>.</li>
+</ul>
+</blockquote>
+<p>We've come a long way. We've built our first actor, looked at its implementation and got got to grips with the <code>Actor</code> trait. Now we'll try something more complex and implement our first background service which we could use in a web application like Rivelin.</p>
+<h2 id="implementing-a-build-task-manager-actor">Implementing a "Build Task Manager" Actor</h2>
+<p>We'll create the "Builder Actor" from the architecture diagram above. We won't build exactly the actor used in Rivelin, but we'll create one that follows the same pattern. Lets remind ourselves how this fits into Rivelin's architecture:</p>
+<img src="/rivelin_architecture_build_actor.svg"/>
+<p>We have two http handlers that interact with a background service. That service is an actor called the <code>BuildTaskManager</code>. In Rivelin this component builds OCI images, but for our purposes we can just assume it's doing some arbitrary work that takes more time than we'd wish to wait before our HTTP handler sends a response back to the client. This work will be happening inside of a <a href="https://tokio.rs/tokio/tutorial/spawning#tasks">tokio::task</a> - an asynchronous green thread.</p>
+<blockquote>
+<p>If you want to run the code, the actor is implemented in a test <a href="https://github.com/OscartGiles/rivelin_extra/blob/c0ba628bc57419da1f018cbe4939d4e3077590fb/rivelin_actors/tests/build_task_manager.rs">here</a>.</p>
+</blockquote>
+<!-- Clients can send three requests to our server. One to start a build, another to cancel it and a third to get a stream of updates about the tasks progress using [server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events).
+
+> Note: We could also use technique such as polling, long-polling or websockets. Server-sent events are more efficient than polling and avoid firewall issues that can arise with websockets. They're also incredibly easy to [use with htmx](https://v1.htmx.org/extensions/server-sent-events/). When not used over HTTP/2 they have some limitations around the maximum number of open connections which can cause problems when users have a lot of taps open using the same domain. -->
+<h3 id="buildtaskmanager-message-type">BuildTaskManager Message type</h3>
+<p>Our <code>BuildTaskManager</code> will receive two kinds of messages:</p>
+<ul>
+<li>A message telling the actor to start a "build". This should respond with an id for the build, which can be used to cancel the build if necessary.</li>
+<li>A message telling the actor to cancel a "build". This should respond with whether the build was cancelled.</li>
+</ul>
+<p>We can implement that as an <a href="https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html">enum</a> in Rust, with the variants representing the different message types:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[</span><span style="color:#e9fdac;">derive</span><span>(Debug)]
+</span><span style="color:#ff5e5e;">pub </span><span style="font-style:italic;color:#fbdfb5;">enum </span><span>Message {
+</span><span>    Build {
+</span><span>        resp_chan: oneshot::Sender&lt;tokio::task::Id&gt;,
+</span><span>    },
+</span><span>    Cancel {
+</span><span>        build_id: tokio::task::Id,
+</span><span>        resp_chan: oneshot::Sender&lt;</span><span style="font-style:italic;color:#fbdfb5;">bool</span><span>&gt;,
+</span><span>    },
+</span><span>}
+</span></code></pre>
+<p>The <code>Build</code> variant has a <code>oneshot::Sender</code> which will be used to send a unique id for the build back to the caller. The <code>Cancel</code> variant uses that same id to cancel a build task, and a <code>oneshot::Sender</code> which will be used to send back whether the build was cancelled.</p>
+<blockquote>
+<p>This uses <a href="https://docs.rs/tokio/latest/tokio/task/struct.Id.html"><code>tokio::task::Id</code></a> as the build id. Initially I used <a href="https://docs.rs/uuid/latest/uuid/struct.Uuid.html"><code>uuid::Uuid</code></a> as the build id, but swapped it out to solve a problem with tracking builds that had panicked. Be aware that <code>tokio::task::Id</code> requires <a href="https://docs.rs/tokio/latest/tokio/index.html#unstable-features"><code>tokio_unstable</code></a>.</p>
+</blockquote>
+<h3 id="buildtaskmanager-state">BuildTaskManager State</h3>
+<p>Next we define the <code>State</code> type for our actor:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff5e5e;">pub </span><span style="font-style:italic;color:#fbdfb5;">struct </span><span>TaskManagerState {
+</span><span>    </span><span style="color:#e9fdac;">abort_handles</span><span>: HashMap&lt;tokio::task::Id, AbortHandle&gt;,
+</span><span>    </span><span style="color:#e9fdac;">tasks</span><span>: JoinSet&lt;()&gt;,
+</span><span>}
+</span></code></pre>
+<p>This has two interesting fields. The <code>tasks</code> field is a <a href="https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html"><code>JoinSet</code></a>, which is a collection of spawned tasks. We can await the completion of a task using its <a href="https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html#method.join_next"><code>join_next</code></a> or <a href="https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html#method.join_next_with_id"><code>join_next_with_id</code></a> methods. Our actor will work by spawning tasks, adding them to the <code>JoinSet</code> and then awaiting for any of the tasks to finish.</p>
+<p>The <code>abort_handles</code> field is a HashMap which maps builds <code>tokio::task::Id</code> to their <a href="https://docs.rs/tokio/latest/tokio/task/struct.AbortHandle.html"><code>AbortHandle</code></a>, which can be used to abort the task. We store the <code>AbortHandle</code> so that when the actor receives a <code>Message::Cancel</code> we can retrieve its <code>AbortHandle</code> and abort the task.</p>
+<blockquote>
+<p>An aborted task will stop executing at its next await point. An alternative would be to use <a href="https://docs.rs/tokio-util/latest/tokio_util/sync/struct.CancellationToken.html#"><code>CancellationToken</code></a>s to implement graceful shutdowns.</p>
+</blockquote>
+<h3 id="buildtaskmanager-handle-method">BuildTaskManager handle method</h3>
+<p>Lets look at the implementation of the <code>Actor::handle</code> method:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span>async </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">handle</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">message</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message, </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State) {
+</span><span>    </span><span style="color:#ff5e5e;">match</span><span> message {
+</span><span>        Message::Build { resp_chan } </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>            </span><span style="font-style:italic;color:#fbdfb5;">let</span><span> handle </span><span style="color:#ff5e5e;">=</span><span> state.tasks.</span><span style="color:#6699cc;">spawn</span><span>(async </span><span style="color:#ff5e5e;">move </span><span>{
+</span><span>                tokio::time::sleep(std::time::Duration::from_secs(</span><span style="color:#fdb082;">1</span><span>)).await;
+</span><span>            });
+</span><span>
+</span><span>            </span><span style="font-style:italic;color:#fbdfb5;">let</span><span> task_id </span><span style="color:#ff5e5e;">=</span><span> handle.</span><span style="color:#6699cc;">id</span><span>();
+</span><span>            println!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Building: </span><span style="color:#fdb082;">{}</span><span style="color:#ffffff;">&quot;</span><span>, task_id);
+</span><span>            </span><span style="color:#6d6d6d;">// Store the abort handle in the build_tracker
+</span><span>            state.abort_handles.</span><span style="color:#6699cc;">insert</span><span>(task_id, handle);
+</span><span>            </span><span style="color:#6d6d6d;">// Respond with the task id to allow cancellation
+</span><span>            resp_chan.</span><span style="color:#6699cc;">send</span><span>(task_id).</span><span style="color:#6699cc;">unwrap</span><span>();
+</span><span>        }
+</span><span>        Message::Cancel {
+</span><span>            build_id,
+</span><span>            resp_chan: msg,
+</span><span>        } </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>            println!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Cancelling: build: </span><span style="color:#fdb082;">{}</span><span style="color:#ffffff;">&quot;</span><span>, build_id);
+</span><span>            </span><span style="color:#ff5e5e;">if </span><span style="font-style:italic;color:#fbdfb5;">let </span><span style="color:#fbe3bf;">Some</span><span>(handle) </span><span style="color:#ff5e5e;">=</span><span> state.abort_handles.</span><span style="color:#6699cc;">remove</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span>build_id) {
+</span><span>                handle.</span><span style="color:#6699cc;">abort</span><span>();
+</span><span>                msg.</span><span style="color:#6699cc;">send</span><span>(</span><span style="color:#ff8942;">true</span><span>).</span><span style="color:#6699cc;">unwrap</span><span>();
+</span><span>            } </span><span style="color:#ff5e5e;">else </span><span>{
+</span><span>                eprintln!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Task not found for cancellation: </span><span style="color:#fdb082;">{:?}</span><span style="color:#ffffff;">&quot;</span><span>, build_id);
+</span><span>                msg.</span><span style="color:#6699cc;">send</span><span>(</span><span style="color:#ff8942;">false</span><span>).</span><span style="color:#6699cc;">unwrap</span><span>();
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>When a <code>Message::Build</code> is received we a spawn a new task which is stored in the <code>JoinSet</code>. Here that task just sleeps for 1 second, but in Rivelin it builds our OCI image.  It then gets an id for the task, stores the <code>AbortHandle</code> for the task in the HashMap and finally sends back the id to the caller.</p>
+<p>When a <code>Message::Cancel</code> is received we take the <code>AbortHandle</code> out of the <code>HashMap</code>, attempt to abort the task and then send a message to the caller indicating whether the task was cancelled.</p>
+<h3 id="buildtaskmanager-run-method"><code>BuildTaskManager</code> run method</h3>
+<p>We have one final problem to solve. If you recap the default <code>run</code> method above, you'll remember it simply iterates over a stream of messages, passing them to the <code>handle</code> method. However, our actor also needs to check the <code>JoinSet</code> periodically to see if any tasks have finished. When they finish it can then remove its <code>AbortHandle</code> from its HashMap.</p>
+<p>To do this we can override the actors <code>.run</code> method:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span>async </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">run</span><span>(
+</span><span>    </span><span style="font-style:italic;color:#fc9354;">self</span><span>,
+</span><span>    </span><span style="color:#ff5e5e;">mut </span><span style="font-style:italic;color:#fc9354;">message_stream</span><span>: impl Stream&lt;Item = </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>Message&gt; + Send + </span><span style="color:#ff5e5e;">&#39;static</span><span> + std::marker::Unpin,
+</span><span>    </span><span style="color:#ff5e5e;">mut </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State,
+</span><span>    </span><span style="font-style:italic;color:#fc9354;">cancellation_token</span><span>: CancellationToken,
+</span><span>) {
+</span><span>    </span><span style="color:#ff5e5e;">loop </span><span>{
+</span><span>        tokio::select</span><span style="color:#ff5e5e;">! </span><span>{
+</span><span>            </span><span style="color:#ff5e5e;">_ =</span><span> cancellation_token.</span><span style="color:#6699cc;">cancelled</span><span>() </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#6699cc;">on_stop</span><span>(</span><span style="color:#ff5e5e;">&amp;mut</span><span> state).await;
+</span><span>                </span><span style="color:#ff5e5e;">break</span><span>;
+</span><span>            },
+</span><span>            message </span><span style="color:#ff5e5e;">=</span><span> message_stream.</span><span style="color:#6699cc;">next</span><span>() </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#ff5e5e;">match</span><span> message {
+</span><span>                    </span><span style="color:#fbe3bf;">Some</span><span>(message) </span><span style="color:#ff5e5e;">=&gt; </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#6699cc;">handle</span><span>(message, </span><span style="color:#ff5e5e;">&amp;mut</span><span> state).await,
+</span><span>                    </span><span style="color:#fbe3bf;">None </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>                        </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#6699cc;">on_stop</span><span>(</span><span style="color:#ff5e5e;">&amp;mut</span><span> state).await;
+</span><span>                        </span><span style="color:#ff5e5e;">break
+</span><span>                    },
+</span><span>                };
+</span><span>            },
+</span><span>            res </span><span style="color:#ff5e5e;">=</span><span> state.tasks.</span><span style="color:#6699cc;">join_next_with_id</span><span>(), </span><span style="color:#ff5e5e;">if !</span><span>state.tasks.</span><span style="color:#6699cc;">is_empty</span><span>() </span><span style="color:#ff5e5e;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#ff5e5e;">if </span><span style="font-style:italic;color:#fbdfb5;">let </span><span style="color:#fbe3bf;">Some</span><span>(</span><span style="color:#fbe3bf;">Ok</span><span>((build_id, </span><span style="color:#ff5e5e;">_</span><span>))) </span><span style="color:#ff5e5e;">=</span><span> res {
+</span><span>                    </span><span style="color:#ff5e5e;">if </span><span style="font-style:italic;color:#fbdfb5;">let </span><span style="color:#fbe3bf;">Some</span><span>(_handle) </span><span style="color:#ff5e5e;">=</span><span> state.abort_handles.</span><span style="color:#6699cc;">remove</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span>build_id) {
+</span><span>                        println!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Task completed: </span><span style="color:#fdb082;">{:?}</span><span style="color:#ffffff;">&quot;</span><span>, build_id);
+</span><span>                    } </span><span style="color:#ff5e5e;">else </span><span>{
+</span><span>                        eprintln!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Task not found for cancellation: </span><span style="color:#fdb082;">{:?}</span><span style="color:#ffffff;">&quot;</span><span>, build_id);
+</span><span>                    }
+</span><span>                }
+</span><span>                </span><span style="color:#ff5e5e;">else if </span><span style="font-style:italic;color:#fbdfb5;">let </span><span style="color:#fbe3bf;">Some</span><span>(</span><span style="color:#fbe3bf;">Err</span><span>(e)) </span><span style="color:#ff5e5e;">=</span><span> res {
+</span><span>                    </span><span style="color:#6d6d6d;">// Get the build_id from the error and remove it from the build_tracker
+</span><span>                    </span><span style="font-style:italic;color:#fbdfb5;">let</span><span> build_id </span><span style="color:#ff5e5e;">=</span><span> e.</span><span style="color:#6699cc;">id</span><span>();
+</span><span>                    state.abort_handles.</span><span style="color:#6699cc;">remove</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span>build_id);
+</span><span>                    </span><span style="color:#ff5e5e;">if</span><span> e.</span><span style="color:#6699cc;">is_cancelled</span><span>() {
+</span><span>                        eprintln!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">A task was cancelled.</span><span style="color:#ffffff;">&quot;</span><span>);
+</span><span>                    } </span><span style="color:#ff5e5e;">else </span><span>{
+</span><span>                        eprintln!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Task failed. But the actor is still alive, honest</span><span style="color:#ffffff;">&quot;</span><span>);
+</span><span>
+</span><span>                    }
+</span><span>                }
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>It's identical to the default, but with an additional branch that checks if any tasks have completed: If a task has completed it removes the <code>AbortHandle</code> from the <code>HashMap</code>. You'll notice it uses a guard,</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span>state.tasks.</span><span style="color:#6699cc;">join_next_with_id</span><span>(), </span><span style="color:#ff5e5e;">if !</span><span>state.tasks.</span><span style="color:#6699cc;">is_empty</span><span>() 
+</span></code></pre>
+<p>to ensure the branch only executes if the <code>JoinSet</code> is not empty.</p>
+<p>Finally we also need to implement the <code>on_stop</code> method to handle graceful shutdown. It simply waits for all existing tasks to complete:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span>async </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">on_stop</span><span>(</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">state</span><span>: </span><span style="color:#ff5e5e;">&amp;mut </span><span style="font-style:italic;color:#fbdfb5;">Self::</span><span>State) {
+</span><span>    println!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Waiting for all running tasks to complete.</span><span style="color:#ffffff;">&quot;</span><span>);
+</span><span>    </span><span style="color:#ff5e5e;">while !</span><span>state.tasks.</span><span style="color:#6699cc;">is_empty</span><span>() {
+</span><span>        state.tasks.</span><span style="color:#6699cc;">join_next</span><span>().await;
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<blockquote>
+<p>In this implementation the actors address could keep sending messages after graceful shutdown has started, but the actor will never process them. It might be better for callers to receive an error when sending new messages to an actor that is shutting down.</p>
+<p>Fault-tolerance: Implementing background services can be a little tricky because the service going down can be catastrophic. One option is to ensure that the service is restarted if it panics. We could implement a supervisor for our actors which would restart them if a panic occurs. However, Rust is exceptionally good at eliminating runtime errors because it treats errors as values. None-the-less, Rust code can still panic, and when prototyping I sometimes catch myself out by overusing <code>unwrap</code> and <code>expect</code>. Luckily our <code>BuildTaskManager</code> will already gracefully handle panics as long as they occur inside of a task in the <code>JoinSet</code>.</p>
+</blockquote>
+<h3 id="last-step-implement-an-address-wrapper-type">Last step: Implement an address wrapper type</h3>
+<p>Just like in the first example, we can implement a wrapper type to create a simpler API for our actors address:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff5e5e;">pub </span><span style="font-style:italic;color:#fbdfb5;">struct </span><span>BackgroundActorAddr(pub Addr&lt;BuildTaskManager&gt;);
+</span><span>
+</span><span style="font-style:italic;color:#fbdfb5;">impl </span><span style="color:#fbe3bf;">From</span><span>&lt;Addr&lt;BuildTaskManager&gt;&gt; </span><span style="color:#ff5e5e;">for </span><span>BackgroundActorAddr {
+</span><span>    </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">from</span><span>(</span><span style="font-style:italic;color:#fc9354;">addr</span><span>: Addr&lt;BuildTaskManager&gt;) -&gt; </span><span style="font-style:italic;color:#fbdfb5;">Self </span><span>{
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">Self</span><span>(addr)
+</span><span>    }
+</span><span>}
+</span><span style="font-style:italic;color:#fbdfb5;">impl </span><span>BackgroundActorAddr {
+</span><span>    </span><span style="color:#ff5e5e;">pub</span><span> async </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">build</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>) -&gt; tokio::task::Id {
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">let </span><span>(tx, rx) </span><span style="color:#ff5e5e;">= </span><span>oneshot::channel();
+</span><span>        </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#fdb082;">0.</span><span style="color:#6699cc;">send</span><span>(Message::Build { resp_chan: tx }).await.</span><span style="color:#6699cc;">unwrap</span><span>();
+</span><span>        rx.await.</span><span style="color:#6699cc;">unwrap</span><span>()
+</span><span>    }
+</span><span>    </span><span style="color:#ff5e5e;">pub</span><span> async </span><span style="font-style:italic;color:#fbdfb5;">fn </span><span style="color:#8cdaff;">cancel</span><span>(</span><span style="color:#ff5e5e;">&amp;</span><span style="font-style:italic;color:#fc9354;">self</span><span>, </span><span style="font-style:italic;color:#fc9354;">build_id</span><span>: tokio::task::Id) -&gt; </span><span style="font-style:italic;color:#fbdfb5;">bool </span><span>{
+</span><span>        </span><span style="font-style:italic;color:#fbdfb5;">let </span><span>(tx, rx) </span><span style="color:#ff5e5e;">= </span><span>oneshot::channel();
+</span><span>        </span><span style="color:#e9fdac;">self</span><span>.</span><span style="color:#fdb082;">0
+</span><span>            .</span><span style="color:#6699cc;">send</span><span>(Message::Cancel {
+</span><span>                build_id,
+</span><span>                resp_chan: tx,
+</span><span>            })
+</span><span>            .await
+</span><span>            .</span><span style="color:#6699cc;">unwrap</span><span>();
+</span><span>
+</span><span>        rx.await.</span><span style="color:#6699cc;">unwrap</span><span>()
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<h3 id="start-using-the-buildtaskmanager">Start using the BuildTaskManager:</h3>
+<p>With our API completed, we can now use the <code>BuildTaskManager</code> like this:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">let </span><span>(addr, handle): (BackgroundActorAddr, </span><span style="color:#ff5e5e;">_</span><span>) </span><span style="color:#ff5e5e;">=
+</span><span>        Actor::spawn(BuildTaskManager, TaskManagerState::new());
+</span><span>
+</span><span style="color:#6d6d6d;">// Start two builds
+</span><span style="font-style:italic;color:#fbdfb5;">let</span><span> first_build_id </span><span style="color:#ff5e5e;">=</span><span> addr.</span><span style="color:#6699cc;">build</span><span>().await;
+</span><span style="font-style:italic;color:#fbdfb5;">let</span><span> _second_build_id </span><span style="color:#ff5e5e;">=</span><span> addr.</span><span style="color:#6699cc;">build</span><span>().await;
+</span><span>
+</span><span style="color:#6d6d6d;">// Cancel one of them
+</span><span>println!(</span><span style="color:#ffffff;">&quot;</span><span style="color:#fbe3bf;">Cancelling: </span><span style="color:#fdb082;">{:?}</span><span style="color:#ffffff;">&quot;</span><span>, first_build_id);
+</span><span style="font-style:italic;color:#fbdfb5;">let</span><span> cancel_success </span><span style="color:#ff5e5e;">=</span><span> addr.</span><span style="color:#6699cc;">cancel</span><span>(first_build_id).await;
+</span><span>assert!(cancel_success);
+</span><span>
+</span><span style="color:#6d6d6d;">// Drop addr so that the actor can shut down. It will process any remaining tasks before shutting down.
+</span><span style="color:#6699cc;">drop</span><span>(addr);
+</span><span>
+</span><span style="color:#6d6d6d;">// Wait for the actor to shutdown
+</span><span>handle.await.</span><span style="color:#6699cc;">unwrap</span><span>();
+</span></code></pre>
+<h3 id="aborting-the-actor">Aborting the actor</h3>
+<p>We can call abort on the actor's <code>JoinHandle</code> like so:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">let </span><span>(addr, handle): (BackgroundActorAddr, </span><span style="color:#ff5e5e;">_</span><span>) </span><span style="color:#ff5e5e;">=
+</span><span>    Actor::spawn(BuildTaskManager, TaskManagerState::new());
+</span><span>
+</span><span>handle.</span><span style="color:#6699cc;">abort</span><span>();
+</span></code></pre>
+<p>causing the actor to stop at the next await point and shutdown. In the case of the <code>BuildTaskManager</code> this will cause the <code>JoinSet</code> held in its state to be <a href="https://doc.rust-lang.org/std/ops/trait.Drop.html">dropped</a>. Dropping the <code>JoinSet</code> causes all tasks in the set to be immediately aborted. Be aware that any tasks we started that were not in the <code>JoinSet</code> would be orphaned, and continue running.</p>
+<h3 id="graceful-shutdown">Graceful shutdown</h3>
+<p>The actor will gracefully shutdown when all of its addresses have been dropped. However, we can also trigger graceful shutdown using the actors handle:</p>
+<pre data-lang="rust" style="background-color:#191919;color:#f8f8f2;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#fbdfb5;">let </span><span>(addr, handle): (BackgroundActorAddr, </span><span style="color:#ff5e5e;">_</span><span>) </span><span style="color:#ff5e5e;">=
+</span><span>        Actor::spawn(BuildTaskManager, TaskManagerState::new());
+</span><span>
+</span><span>addr.</span><span style="color:#6699cc;">build</span><span>().await;
+</span><span>
+</span><span>handle.</span><span style="color:#6699cc;">graceful_shutdown</span><span>().await.</span><span style="color:#6699cc;">unwrap</span><span>();
+</span></code></pre>
+<p>This uses the <code>CancellationToken</code> we saw earlier to signal to the actor that it should shutdown.</p>
+<blockquote>
+<p>Originally the <code>handle</code> was a tokio <code>JoinHandle</code>, but I changed this to a custom type to <a href="https://github.com/OscartGiles/rivelin_extra/blob/c0ba628bc57419da1f018cbe4939d4e3077590fb/rivelin_actors/src/lib.rs#L141-L164">implement the graceful shutdown</a>.</p>
+</blockquote>
+<h2 id="lets-wrap-this-up-sleeping">Lets wrap this up 😴</h2>
+<p>Well that was a longer post than I anticipated. I hope you enjoyed it! Let me know if you like this architecture or if you would implement it differently.</p>
+<p>Come back soon for the next post on implementing a Pub/Sub Eventbus using the <code>Actor</code> model 🚀</p>
+<p>Finally, if your team is hiring and you think I might be a good fit feel free to message me on <a href="https://www.linkedin.com/in/oscart-giles/">linkedin</a>.</p>
+
+        </div>
+
+        
+        <div class="pagination">
+            <div class="pagination__title">
+                <span class="pagination__title-h">Thanks for reading! Read other posts?</span>
+                <hr />
+            </div>
+            <div class="pagination__buttons">
+                    <span class="button previous">
+                        <a href="https://oscartgiles.github.io/welcome/">
+                            <span class="button__icon">←</span>&nbsp;
+                            <span class="button__text">Hello, I&#x27;m Dr. Oscar Giles</span>
+                        </a>
+                    </span>
+                
+                </div>
+        </div>
+    
+    </div>
+
+        </div>
+
+        
+        <footer class="footer">
+            <div class="footer__inner">
+                <div class="copyright">
+                    <span>© 
+    2024
+ Oscar Giles</span>
+                    <span class="copyright-theme">
+                        <span class="copyright-theme-sep">:: </span>
+                        Theme: <a href="https://github.com/pawroman/zola-theme-terminimal/">Terminimal</a> by pawroman
+                    </span>
+                </div>
+                </div>
+        </footer>
+        
+
+    </div>
+    </body>
+
+</html>
